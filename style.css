@@ -1,245 +1,300 @@
-/* CampusOS — client-side student productivity dashboard */
-const STORAGE_KEY = "campusos-data-v1";
-const defaults = { tasks: [], subjects: [], notes: [], sessions: 0, focusedMinutes: 0, theme: "dark" };
-let state = loadState();
-let activeFilter = "all";
-let timer = { duration: 25 * 60, remaining: 25 * 60, interval: null, running: false, mode: 25 };
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => [...document.querySelectorAll(selector)];
+/* CampusOS design system. Layers keep specificity predictable: tokens > base > layout > components > views. */
+@layer tokens, base, layout, components, views;
 
-function loadState() {
-  try { return { ...defaults, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") }; }
-  catch { return structuredClone(defaults); }
-}
-function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-function escapeHTML(value) {
-  return String(value).replace(/[&<>"']/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[char]));
-}
-function showToast(message) {
-  const toast = $("#toast"); toast.textContent = message; toast.classList.add("show");
-  clearTimeout(showToast.timeout); showToast.timeout = setTimeout(() => toast.classList.remove("show"), 2300);
-}
-function ask({ title, message = "", confirmLabel = "Confirm", value = null, danger = false }) {
-  const dlg = $("#dialog"), input = $("#dialogInput");
-  $("#dialogTitle").textContent = title; $("#dialogMsg").textContent = message;
-  input.hidden = value === null; input.value = value ?? ""; input.required = value !== null;
-  $("#dialogOk").textContent = confirmLabel; $("#dialogOk").classList.toggle("danger", danger);
-  dlg.showModal(); if (value !== null) input.select();
-  return new Promise(resolve => dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok" ? (value === null ? true : input.value.trim()) : null), { once: true }));
-}
-function dateLabel(date) {
-  if (!date) return "No due date";
-  const d = new Date(`${date}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? "No due date" : d.toLocaleDateString(undefined, { day:"numeric", month:"short", year:"numeric" });
-}
-function getAttendance() {
-  if (!state.subjects.length) return null;
-  const total = state.subjects.reduce((sum, subject) => sum + subject.total, 0);
-  const attended = state.subjects.reduce((sum, subject) => sum + subject.attended, 0);
-  return total ? Math.round(attended / total * 100) : 0;
-}
-const tone = pct => pct >= 75 ? "hi" : pct >= 60 ? "mid" : "lo";
-function renderStats() {
-  const open = state.tasks.filter(t => !t.done).length;
-  $("#statOpen").textContent = open; $("#statDone").textContent = state.tasks.filter(t => t.done).length;
-  $("#statAttendance").textContent = getAttendance() === null ? "—" : `${getAttendance()}%`;
-  $("#statSessions").textContent = state.sessions;
-  $("#navTaskCount").textContent = open;
-  $("#focusSessions").textContent = state.sessions; $("#focusMinutes").textContent = state.focusedMinutes;
-  const avg = getAttendance();
-  $("#ringValue").textContent = avg === null ? "—" : `${avg}%`;
-  $("#attendanceRing").style.background = `conic-gradient(var(--cyan) ${avg === null ? 0 : avg * 3.6}deg, var(--line) 0deg)`;
-  $("#attendanceMessage").textContent = avg === null ? "Add your subjects" : avg >= 75 ? "You're building consistency" : "There's room to improve";
-  $("#attendanceSubtext").textContent = avg === null ? "Track classes attended to see your progress here." : `${state.subjects.length} subject${state.subjects.length === 1 ? "" : "s"} tracked so far.`;
-  $("#todayLabel").textContent = new Date().toLocaleDateString(undefined, { weekday:"long", month:"long", day:"numeric" })
-  ;const hr = new Date().getHours(); $("#greeting").textContent = hr < 12 ? "Good morning." : hr < 18 ? "Good afternoon." : "Good evening.";
-}
-function taskMarkup(task) {
-  return `<div class="task-row ${task.done ? "done" : ""}">
-    <input class="task-check" type="checkbox" data-task-check="${task.id}" ${task.done ? "checked" : ""} aria-label="Complete ${escapeHTML(task.title)}">
-    <div class="task-main"><strong>${escapeHTML(task.title)}</strong><small>${escapeHTML(task.subject || "Personal")} · ${escapeHTML(dateLabel(task.date))}</small></div>
-    <span class="priority ${escapeHTML(task.priority)}">${escapeHTML(task.priority)}</span>
-    <button class="edit-btn" data-task-edit="${task.id}" aria-label="Edit task">Edit</button><button class="delete-btn" data-task-delete="${task.id}" aria-label="Delete task">×</button></div>`;
-}
-function renderTasks() {
-  const pending = state.tasks.filter(t => !t.done).sort((a,b) => (a.date || "9999").localeCompare(b.date || "9999"));
-  $("#overviewTasks").innerHTML = pending.slice(0, 4).map(taskMarkup).join("");
-  $("#overviewEmpty").hidden = pending.length > 0;
-  const query = ($("#taskSearch")?.value || $("#globalSearch")?.value || "").trim().toLowerCase();
-  const filtered = state.tasks.filter(t => (activeFilter === "all" || (activeFilter === "open" ? !t.done : t.done)) && (!query || `${t.title} ${t.subject}`.toLowerCase().includes(query)))
-    .sort((a,b) => Number(a.done) - Number(b.done) || (a.date || "9999").localeCompare(b.date || "9999"));
-  $("#allTasks").innerHTML = filtered.map(taskMarkup).join("");
-  $("#tasksEmpty").hidden = filtered.length > 0;
-  $("#taskCountLabel").textContent = `${filtered.length} task${filtered.length === 1 ? "" : "s"}`;
-  $$(".filter-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.filter === activeFilter));
-}
-function renderAttendance() {
-  const avg = getAttendance();
-  $("#overviewSubjects").innerHTML = state.subjects.slice(0,3).map(s => {
-    const pct = s.total ? Math.round(s.attended / s.total * 100) : 0;
-    return `<div class="mini-subject ${tone(pct)}"><span>${escapeHTML(s.name)}</span><div class="mini-track"><i style="width:${pct}%"></i></div><b>${pct}%</b></div>`;
-  }).join("");
-  $("#subjectGrid").innerHTML = state.subjects.map(s => {
-    const pct = s.total ? Math.round(s.attended / s.total * 100) : 0;
-    return `<article class="subject-card ${tone(pct)}"><div class="subject-card-head"><h3>${escapeHTML(s.name)}</h3><span class="subject-percent">${pct}%</span></div><div class="subject-meta"><span>${s.attended} attended</span><span>${s.total} total classes</span></div><div class="attendance-actions"><button class="tiny-action" data-attendance-change="${s.id}" data-change="-1" ${s.attended===0?"disabled":""}>− Attended</button><button class="tiny-action" data-attendance-change="${s.id}" data-change="1">＋ Attended</button></div><div class="progress-track"><i style="width:${pct}%"></i></div><button class="delete-btn" data-subject-delete="${s.id}">Remove subject ×</button></article>`;
-  }).join("");
-  $("#subjectCount").textContent = `${state.subjects.length} subject${state.subjects.length === 1 ? "" : "s"}`;
-  $("#attendanceEmpty").hidden = state.subjects.length > 0;
-}
-function renderNotes() {
-  $("#notesGrid").innerHTML = state.notes.map(note => `<article class="note-card c${(note.id.charCodeAt(0) + note.id.length) % 4}"><p>${escapeHTML(note.text)}</p><div class="note-card-bottom"><span>${escapeHTML(note.date)}</span><button class="delete-btn" data-note-delete="${note.id}" aria-label="Delete note">×</button></div></article>`).join("");
-  $("#notesEmpty").hidden = state.notes.length > 0;
-  $("#noteCount").textContent = `${state.notes.length} note${state.notes.length === 1 ? "" : "s"}`;
-}
-function renderWeek() {
-  const days = [...Array(7)].map((_, i) => {
-    const d = new Date(); d.setDate(d.getDate() - (6 - i));
-    const key = d.toISOString().slice(0,10);
-    const count = state.tasks.filter(t => t.done && t.completedAt && t.completedAt.slice(0,10) === key).length;
-    return { label: d.toLocaleDateString(undefined,{weekday:"short"}), count };
-  });
-  const max = Math.max(1, ...days.map(d => d.count));
-  $("#weekChart").innerHTML = days.map(d => `<div class="week-day"><div class="bar-wrap"><i style="height:${Math.max(5,d.count/max*100)}%"></i></div><strong>${d.count}</strong><small>${d.label}</small></div>`).join("");
-  $("#weekTotal").textContent = `${days.reduce((sum,d)=>sum+d.count,0)} completed`;
-}
-function renderAll() { renderStats(); renderTasks(); renderAttendance(); renderNotes(); renderWeek(); }
-function navigate(view) {
-  $$(".view").forEach(section => section.classList.toggle("active", section.id === `view-${view}`));
-  $$(".nav-link[data-view]").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
-  $("#breadcrumbTitle").textContent = ({overview:"Overview",tasks:"My tasks",attendance:"Attendance",focus:"Focus room",notes:"Quick notes"})[view] || "Overview";
-  $("#sidebar").classList.remove("open"); window.scrollTo({top:0, behavior:"smooth"});
-  const v = $(`#view-${view}`); v.classList.remove("enter"); void v.offsetWidth; v.classList.add("enter");
-}
-$$("[data-view]").forEach(btn => btn.addEventListener("click", () => navigate(btn.dataset.view)));
-$$("[data-go]").forEach(btn => btn.addEventListener("click", () => { navigate(btn.dataset.go); if (btn.dataset.focus) setTimeout(() => $(btn.dataset.focus)?.focus({ preventScroll: true }), 60); }));
-$("#mobileMenu").addEventListener("click", e => { e.stopPropagation(); $("#sidebar").classList.toggle("open"); });
-document.addEventListener("click", e => { if (!e.target.closest("#sidebar")) $("#sidebar").classList.remove("open"); });
-$("#themeToggle").addEventListener("click", () => {
-  state.theme = state.theme === "dark" ? "light" : "dark";
-  document.body.classList.toggle("dark", state.theme === "dark"); saveState();
-  $("#themeIcon").textContent = state.theme === "dark" ? "☾" : "☼";
-  document.querySelector('meta[name="theme-color"]').content = state.theme === "dark" ? "#0a0f24" : "#eef0fb";
-});
-
-$("#taskForm").addEventListener("submit", event => {
-  event.preventDefault();
-  const title = $("#taskTitle").value.trim();
-  if (!title) return showToast("Please enter a task title.");
-  state.tasks.push({ id: crypto.randomUUID(), title, subject: $("#taskSubject").value.trim(), date: $("#taskDate").value, priority: $("#taskPriority").value, done:false, createdAt:new Date().toISOString(), completedAt:null });
-  saveState(); renderAll(); event.target.reset(); $("#taskTitle").focus(); showToast("Task added to your list.");
-});
-$$(".filter-btn").forEach(btn => btn.addEventListener("click", () => { activeFilter = btn.dataset.filter; renderTasks(); }));
-document.addEventListener("change", event => {
-  const check = event.target.closest("[data-task-check]");
-  if (check) {
-    const task = state.tasks.find(t => t.id === check.dataset.taskCheck);
-    if (task) { task.done = check.checked; task.completedAt = task.done ? new Date().toISOString() : null; saveState(); renderAll(); showToast(task.done ? "Nice work — task completed!" : "Task moved back to to-do."); }
+@layer tokens {
+  :root {
+    --font-body: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-display: Sora, Inter, system-ui, sans-serif;
+    --violet: #8b5cf6; --indigo: #6366f1; --cyan: #22d3ee; --emerald: #34d399; --amber: #fbbf24; --coral: #fb7185;
+    --accent: var(--violet);
+    --r-sm: 8px; --r-md: 12px; --r-lg: 18px; --ease: cubic-bezier(.2, .8, .2, 1);
+    /* light theme */
+    --bg: #eceffc; --bg-glow: rgba(139, 92, 246, .12);
+    --surface: #fff; --surface-2: #f3f4ff; --line: #d9ddf3;
+    --text: #141a3a; --muted: #5a638c;
+    --shadow: 0 10px 30px rgba(40, 45, 110, .09);
+    --accent-soft: rgba(139, 92, 246, .12);
   }
-});
-document.addEventListener("click", async event => {
-  const taskDelete = event.target.closest("[data-task-delete]");
-  const subjectDelete = event.target.closest("[data-subject-delete]");
-  const noteDelete = event.target.closest("[data-note-delete]");
-  const taskEdit = event.target.closest("[data-task-edit]");
-  if (taskEdit) {
-    const task = state.tasks.find(t => t.id === taskEdit.dataset.taskEdit);
-    if (task) {
-      const title = await ask({ title: "Edit task", message: "Update the task title.", value: task.title, confirmLabel: "Save changes" });
-      if (title) { task.title = title.trim().slice(0,90); saveState(); renderAll(); showToast("Task updated."); }
-    }
+  body.dark {
+    --bg: #070b1a; --bg-glow: rgba(99, 102, 241, .22);
+    --surface: #0f1631; --surface-2: #151d40; --line: rgba(148, 160, 255, .15);
+    --text: #e9edff; --muted: #97a0c8;
+    --shadow: 0 14px 40px rgba(0, 0, 0, .45);
+    --accent-soft: rgba(139, 92, 246, .2);
   }
-  if (taskDelete && await ask({ title: "Delete this task?", message: "This can't be undone.", confirmLabel: "Delete task", danger: true })) { state.tasks = state.tasks.filter(t => t.id !== taskDelete.dataset.taskDelete); saveState(); renderAll(); showToast("Task deleted."); }
-  if (subjectDelete && await ask({ title: "Remove this subject?", message: "Its attendance data will be deleted.", confirmLabel: "Remove subject", danger: true })) { state.subjects = state.subjects.filter(s => s.id !== subjectDelete.dataset.subjectDelete); saveState(); renderAll(); showToast("Subject removed."); }
-  if (noteDelete && await ask({ title: "Delete this note?", message: "This can't be undone.", confirmLabel: "Delete note", danger: true })) { state.notes = state.notes.filter(n => n.id !== noteDelete.dataset.noteDelete); saveState(); renderAll(); showToast("Note deleted."); }
-  const attendanceChange = event.target.closest("[data-attendance-change]");
-  if (attendanceChange) {
-    const subject = state.subjects.find(s => s.id === attendanceChange.dataset.attendanceChange);
-    const delta = Number(attendanceChange.dataset.change);
-    if (subject && (delta < 0 ? subject.attended > 0 : subject.attended < subject.total)) {
-      subject.attended += delta; saveState(); renderAll(); showToast("Attendance updated.");
-    } else if (subject && delta > 0) showToast("Attended classes cannot exceed total classes. Add a total class first.");
-  }
-});
-
-$("#attendanceForm").addEventListener("submit", event => {
-  event.preventDefault();
-  const name = $("#subjectName").value.trim(), attended = Number($("#classesAttended").value), total = Number($("#classesTotal").value);
-  if (!name) return showToast("Enter a subject name.");
-  if (!Number.isInteger(attended) || !Number.isInteger(total) || total < 1 || attended < 0 || attended > total) return showToast("Check the class counts. Attended cannot exceed total.");
-  if (state.subjects.some(s => s.name.toLowerCase() === name.toLowerCase())) return showToast("That subject is already on your list.");
-  state.subjects.push({id:crypto.randomUUID(), name, attended, total}); saveState(); renderAll(); event.target.reset(); $("#classesAttended").value = 0; $("#classesTotal").value = 1; showToast("Subject added.");
-});
-
-function updateTimerDisplay() {
-  const mins = Math.floor(timer.remaining / 60), secs = timer.remaining % 60;
-  $("#timerDisplay").textContent = `${String(mins).padStart(2,"0")}:${String(secs).padStart(2,"0")}`;
-  $("#timerProgress").style.strokeDashoffset = 729 * (1 - timer.remaining / timer.duration);
 }
-function stopTimer() { clearInterval(timer.interval); timer.interval = null; timer.running = false; $("#timerStart").textContent = "Resume"; }
-function setTimer(minutes) {
-  stopTimer(); timer.mode = minutes; timer.duration = minutes * 60; timer.remaining = timer.duration;
-  $$(".mode-btn").forEach(btn => btn.classList.toggle("active", Number(btn.dataset.minutes) === minutes));
-  $("#timerStart").textContent = "Start focus"; $("#timerStatus").textContent = minutes === 25 ? "READY TO FOCUS" : "READY FOR A BREAK";
-  updateTimerDisplay();
-}
-$$(".mode-btn").forEach(btn => btn.addEventListener("click", () => setTimer(Number(btn.dataset.minutes))));
-$("#timerStart").addEventListener("click", () => {
-  if (timer.running) { stopTimer(); $("#timerStatus").textContent = "PAUSED"; return; }
-  timer.running = true; $("#timerStart").textContent = "Pause"; $("#timerStatus").textContent = "YOU'RE IN THE ZONE";
-  timer.interval = setInterval(() => {
-    timer.remaining--; updateTimerDisplay();
-    if (timer.remaining <= 0) {
-      stopTimer();
-      if (timer.mode === 25) { state.sessions++; state.focusedMinutes += 25; saveState(); renderStats(); $("#timerStatus").textContent = "SESSION COMPLETE"; showToast("Focus session complete. Great work!"); }
-      else { $("#timerStatus").textContent = "BREAK COMPLETE"; showToast("Break finished. Ready when you are."); }
-      $("#timerStart").textContent = "Start again";
-    }
-  }, 1000);
-});
-$("#timerReset").addEventListener("click", () => { setTimer(timer.mode); $("#timerStatus").textContent = "TIMER RESET"; });
 
-$("#saveNote").addEventListener("click", () => {
-  const text = $("#noteInput").value.trim();
-  if (!text) return showToast("Write something before saving.");
-  state.notes.unshift({id:crypto.randomUUID(), text, date:new Date().toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})});
-  saveState(); renderNotes(); $("#noteInput").value = ""; showToast("Note saved.");
-});
-
-document.body.classList.toggle("dark", state.theme === "dark");
-$("#themeIcon").textContent = state.theme === "dark" ? "☾" : "☼";
-renderAll();
-
-// Search across the workspace and filter task results as the user types.
-$("#taskSearch")?.addEventListener("input", () => renderTasks());
-$("#globalSearch")?.addEventListener("input", event => {
-  const query = event.target.value.trim().toLowerCase();
-  if (!query) { renderTasks(); return; }
-  const matches = state.tasks.some(t => `${t.title} ${t.subject}`.toLowerCase().includes(query));
-  const noteMatches = state.notes.some(n => n.text.toLowerCase().includes(query));
-  const subjectMatches = state.subjects.some(s => s.name.toLowerCase().includes(query));
-  if (matches) { navigate("tasks"); $("#taskSearch").value = event.target.value; renderTasks(); }
-  else if (subjectMatches) { navigate("attendance"); showToast("Matching subject found in attendance."); }
-  else if (noteMatches) { navigate("notes"); showToast("Matching note found in your notebook."); }
-});
-document.addEventListener("keydown", event => {
-  if (event.key === "/" && !["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName)) {
-    event.preventDefault(); $("#globalSearch").focus();
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--text); font: 400 15px/1.5 var(--font-body); min-height: 100dvh;
+    background: radial-gradient(900px 500px at 85% -10%, var(--bg-glow), transparent 70%),
+                radial-gradient(700px 500px at 0% 100%, rgba(34, 211, 238, .07), transparent 70%), var(--bg);
+    background-attachment: fixed;
   }
-});
-$("#exportData")?.addEventListener("click", () => {
-  const blob = new Blob([JSON.stringify({app:"CampusOS",version:2,exportedAt:new Date().toISOString(),data:state},null,2)],{type:"application/json"});
-  const url = URL.createObjectURL(blob); const a = document.createElement("a");
-  a.href = url; a.download = `campusos-backup-${new Date().toISOString().slice(0,10)}.json`; a.click();
-  URL.revokeObjectURL(url); showToast("Backup downloaded.");
-});
-$("#importData")?.addEventListener("change", async event => {
-  const file = event.target.files?.[0]; if (!file) return;
-  try {
-    const parsed = JSON.parse(await file.text());
-    const incoming = parsed.data || parsed;
-    if (!incoming || !Array.isArray(incoming.tasks) || !Array.isArray(incoming.subjects) || !Array.isArray(incoming.notes)) throw new Error("Invalid backup");
-    if (!await ask({ title: "Restore this backup?", message: "It will replace the data currently saved in this browser.", confirmLabel: "Restore" })) return;
-    state = {...defaults,...incoming}; saveState(); renderAll(); showToast("Backup restored successfully.");
-  } catch { showToast("That backup file is not valid CampusOS data."); }
-  finally { event.target.value = ""; }
-});
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  h1, h2, h3, p { margin-top: 0; }
+  h1, h2, h3, .stat-card > strong, .timer-readout strong, .ring strong, .subject-percent { font-family: var(--font-display); letter-spacing: -.02em; }
+  :focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .eyebrow { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--cyan); }
+}
+
+@layer layout {
+  .sidebar { position: fixed; inset: 0 auto 0 0; width: 264px; z-index: 20; display: flex; flex-direction: column; padding: 26px 16px 18px;
+    background: linear-gradient(180deg, #0b1130, #070b1a); color: #e9edff; border-right: 1px solid rgba(148, 160, 255, .12); }
+  .main-content { margin-left: 264px; max-width: 1560px; padding: 0 clamp(16px, 3vw, 44px) 28px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; height: 72px; margin-bottom: 28px; border-bottom: 1px solid var(--line); }
+  .view { display: none; }
+  .view.active { display: block; }
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+  .content-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; }
+  .focus-layout { display: grid; grid-template-columns: 1.5fr 1fr; gap: 18px; }
+  .subject-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 16px; }
+  .notes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; }
+  .welcome-row, .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+  .panel-heading, .section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .panel-heading { margin-bottom: 18px; }
+  .section-title { margin: 26px 2px 14px; }
+  .footer { display: flex; justify-content: space-between; gap: 8px; padding: 26px 2px 0; font-size: 12px; color: var(--muted); }
+}
+
+@layer components {
+  /* sidebar */
+  .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 34px; color: #fff; text-decoration: none; font: 800 21px var(--font-display); }
+  .brand-mark { width: 40px; height: 40px; }
+  .brand-accent { color: var(--cyan); }
+  .brand small { display: block; margin-top: 2px; font: 500 10px var(--font-body); color: #7d89b5; letter-spacing: .04em; }
+  .workspace-label { padding: 0 12px 10px; font-size: 12px; font-weight: 600; color: #6f7ba8; }
+  .nav-menu { display: grid; gap: 4px; }
+  .nav-link { display: flex; align-items: center; gap: 12px; padding: 11px 12px; border: 0; border-radius: var(--r-md); background: transparent; color: #a3acd0; font-weight: 500; text-align: left; transition: background .2s, color .2s; }
+  .nav-link > span { width: 20px; text-align: center; font-size: 17px; }
+  .nav-link:hover { background: rgba(139, 92, 246, .12); color: #fff; }
+  .nav-link.active { color: #fff; background: linear-gradient(90deg, rgba(139, 92, 246, .38), rgba(99, 102, 241, .1)); box-shadow: inset 3px 0 var(--violet); }
+  .nav-link b { margin-left: auto; padding: 2px 8px; border-radius: 99px; font-size: 11px; background: rgba(34, 211, 238, .16); color: var(--cyan); }
+  .sidebar-bottom { margin-top: auto; }
+  .side-tip { margin-bottom: 14px; padding: 16px; border-radius: var(--r-md); border: 1px solid rgba(139, 92, 246, .3); background: linear-gradient(145deg, rgba(139, 92, 246, .22), rgba(34, 211, 238, .07)); }
+  .tip-icon { color: var(--amber); }
+  .side-tip strong { display: block; margin: 6px 0 4px; font: 700 14px var(--font-display); }
+  .side-tip p { margin: 0; font-size: 12px; color: #b3bbdc; }
+  .profile { display: flex; align-items: center; gap: 10px; padding: 16px 6px 0; margin-top: 10px; border-top: 1px solid rgba(148, 160, 255, .12); }
+  .profile strong, .profile small { display: block; }
+  .profile small { font-size: 11px; color: #7d89b5; }
+  .avatar, .top-avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; font-weight: 700; color: #fff; background: linear-gradient(135deg, var(--violet), var(--indigo)); }
+  .online-dot, .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 10px var(--emerald); }
+  .online-dot { margin-left: auto; }
+
+  /* topbar */
+  .breadcrumb { font-size: 13px; color: var(--muted); }
+  .breadcrumb span { padding: 0 8px; opacity: .5; }
+  .breadcrumb strong { color: var(--text); }
+  .topbar-right { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+  .backup-btn, .import-label { padding: 8px 12px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--surface); font-size: 12px; font-weight: 600; color: var(--text); cursor: pointer; transition: border-color .2s, transform .2s; }
+  .backup-btn:hover, .import-label:hover { border-color: var(--cyan); transform: translateY(-1px); }
+  .top-avatar { width: 32px; height: 32px; margin-left: 6px; }
+  .mobile-menu { display: none; padding: 8px 11px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+
+  /* buttons */
+  .primary-btn, .secondary-btn { padding: 11px 18px; border: 0; border-radius: var(--r-sm); font-weight: 600; font-size: 14px; transition: transform .15s var(--ease), box-shadow .2s, background .2s; }
+  .primary-btn { color: #fff; background: linear-gradient(135deg, var(--violet), var(--indigo)); box-shadow: 0 8px 22px rgba(124, 92, 246, .38); }
+  .primary-btn:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(124, 92, 246, .5); }
+  .primary-btn.danger { background: linear-gradient(135deg, var(--coral), #e11d48); box-shadow: 0 8px 22px rgba(244, 63, 94, .35); }
+  .secondary-btn { color: var(--text); background: var(--accent-soft); border: 1px solid var(--line); }
+  .secondary-btn:hover { transform: translateY(-2px); border-color: var(--violet); }
+  .primary-btn:active, .secondary-btn:active, .tiny-action:active { transform: scale(.96); }
+  .text-btn, .icon-btn { border: 0; background: transparent; color: var(--cyan); font-weight: 600; font-size: 13px; }
+  .icon-btn { width: 34px; height: 34px; border-radius: var(--r-sm); background: var(--accent-soft); font-size: 16px; }
+  .wide-secondary { width: 100%; margin-top: 16px; padding: 11px 14px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); font-size: 13px; font-weight: 500; text-align: left; transition: border-color .2s; }
+  .wide-secondary:hover { border-color: var(--cyan); }
+  .wide-secondary span { float: right; color: var(--cyan); }
+  .quick-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+  /* surfaces */
+  .panel, .stat-card, .subject-card, .note-card { background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); }
+  .panel { padding: 22px; border-radius: var(--r-lg); }
+  .panel-heading h2, .section-title h2, .focus-side h2 { margin: 0; font-size: 18px; font-weight: 700; }
+  .form-panel { padding: 18px; margin-bottom: 20px; }
+  .lower-panel { margin-top: 18px; background: linear-gradient(110deg, rgba(34, 211, 238, .12), rgba(139, 92, 246, .22)), var(--surface); }
+  .lower-panel .panel-heading { margin: 0; }
+
+  /* stat cards: each metric owns a colour */
+  .stat-card { position: relative; overflow: hidden; padding: 18px 20px; border-radius: var(--r-lg); transition: transform .25s var(--ease), border-color .25s; --c: var(--violet); }
+  .stat-card:nth-child(2) { --c: var(--emerald); } .stat-card:nth-child(3) { --c: var(--cyan); } .stat-card:nth-child(4) { --c: var(--amber); }
+  .stat-card::before { content: ""; position: absolute; inset: -40% -20% auto auto; width: 150px; height: 150px; background: radial-gradient(var(--c), transparent 70%); opacity: .22; }
+  .stat-card:hover { transform: translateY(-3px); border-color: var(--c); }
+  .stat-top { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 500; color: var(--muted); }
+  .stat-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--c); background: color-mix(in srgb, var(--c) 18%, transparent); }
+  .stat-card > strong { display: block; margin: 10px 0 2px; font-size: 32px; font-weight: 800; position: relative; }
+  .stat-card > small { font-size: 12px; color: var(--muted); }
+  .trend { color: var(--emerald); font-weight: 700; }
+
+  /* inputs */
+  .task-form, .attendance-form { display: grid; gap: 12px; align-items: end; }
+  .task-form { grid-template-columns: 2fr 1fr 1fr .8fr auto; }
+  .attendance-form { grid-template-columns: 1.4fr 1fr 1fr auto; }
+  label { display: grid; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  input:not([type=checkbox]), select, textarea { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); font-size: 14px; color: var(--text); transition: border-color .2s, box-shadow .2s; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(34, 211, 238, .2); }
+  .command-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; padding: 4px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); color: var(--muted); }
+  .command-bar input { border: 0 !important; background: transparent !important; box-shadow: none !important; }
+  .command-bar kbd { padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+  .command-hint { font-size: 12px; white-space: nowrap; }
+  .task-tools { display: grid; gap: 12px; margin-bottom: 14px; }
+  .filter-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .filter-tabs { display: flex; gap: 6px; padding: 4px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line); }
+  .filter-btn, .mode-btn { padding: 8px 14px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; transition: background .2s, color .2s; }
+  .filter-btn.active, .mode-btn.active { color: #fff; background: linear-gradient(135deg, var(--violet), var(--indigo)); }
+
+  /* tasks: priority colour runs down the left edge */
+  .task-list { display: grid; gap: 10px; }
+  .task-row { --p: var(--amber); display: flex; align-items: center; gap: 12px; padding: 13px 14px; border: 1px solid var(--line); border-left: 4px solid var(--p); border-radius: var(--r-md); background: var(--surface-2); transition: transform .2s var(--ease), border-color .2s; }
+  .task-row:hover { transform: translateX(3px); }
+  .task-row:has(.priority.High) { --p: var(--coral); } .task-row:has(.priority.Low) { --p: var(--cyan); }
+  .task-check { appearance: none; flex: none; width: 22px; height: 22px; border: 2px solid var(--muted); border-radius: 7px; display: grid; place-content: center; transition: background .2s, border-color .2s, transform .2s var(--ease); }
+  .task-check::after { content: ""; width: 10px; height: 6px; border: solid #04201a; border-width: 0 0 2.5px 2.5px; transform: rotate(-45deg) scale(0); transition: transform .2s var(--ease); margin-top: -2px; }
+  .task-check:checked { background: var(--emerald); border-color: var(--emerald); transform: scale(1.08); }
+  .task-check:checked::after { transform: rotate(-45deg) scale(1); }
+  .task-main { flex: 1; min-width: 0; }
+  .task-main strong { display: block; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task-main small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+  .task-row.done { --p: var(--emerald); opacity: .72; }
+  .task-row.done .task-main strong { text-decoration: line-through; color: var(--muted); }
+  .priority { padding: 3px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; color: var(--amber); background: rgba(251, 191, 36, .14); }
+  .priority.High { color: var(--coral); background: rgba(251, 113, 133, .15); }
+  .priority.Low { color: var(--cyan); background: rgba(34, 211, 238, .13); }
+  .edit-btn { padding: 5px 10px; border: 1px solid var(--line); border-radius: 7px; background: transparent; font-size: 12px; color: var(--muted); }
+  .edit-btn:hover { color: var(--text); border-color: var(--violet); }
+  .delete-btn { padding: 2px 8px; border: 0; background: transparent; font-size: 18px; color: var(--muted); transition: color .2s; }
+  .delete-btn:hover { color: var(--coral); }
+  .empty-state { padding: 32px 16px; text-align: center; color: var(--muted); }
+  .empty-state > span { font-size: 30px; color: var(--violet); }
+  .empty-state strong { display: block; margin: 6px 0; font: 700 16px var(--font-display); color: var(--text); }
+  .empty-state p { margin: 0 0 14px; font-size: 13px; }
+
+  /* attendance: cyan identity, status colour follows the percentage */
+  .subject-card { --t: var(--emerald); padding: 18px; border-radius: var(--r-lg); border-top: 3px solid var(--t); transition: transform .25s var(--ease); }
+  .subject-card:hover { transform: translateY(-3px); }
+  .subject-card.mid, .mini-subject.mid { --t: var(--amber); } .subject-card.lo, .mini-subject.lo { --t: var(--coral); }
+  .subject-card-head { display: flex; align-items: center; justify-content: space-between; }
+  .subject-card h3 { margin: 0; font-size: 16px; }
+  .subject-percent { font-size: 30px; font-weight: 800; color: var(--t); }
+  .subject-meta { display: flex; justify-content: space-between; margin: 12px 0 8px; font-size: 12px; color: var(--muted); }
+  .attendance-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tiny-action { flex: 1; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); font-size: 12px; font-weight: 600; transition: border-color .2s, transform .15s; }
+  .tiny-action:hover:not(:disabled) { border-color: var(--cyan); }
+  .tiny-action:disabled { opacity: .4; cursor: not-allowed; }
+  .progress-track, .mini-track { height: 8px; overflow: hidden; border-radius: 99px; background: var(--line); }
+  .mini-track { width: 80px; height: 6px; }
+  .progress-track i, .mini-track i { display: block; height: 100%; border-radius: 99px; background: var(--t, var(--emerald)); box-shadow: 0 0 12px var(--t, var(--emerald)); transform-origin: left; }
+  .subject-card .delete-btn { margin-top: 10px; padding-left: 0; font-size: 12px; }
+  .attendance-summary { display: flex; align-items: center; gap: 20px; padding-bottom: 18px; }
+  .ring { position: relative; display: grid; place-items: center; flex: none; width: 118px; height: 118px; border-radius: 50%; }
+  .ring::before { content: ""; position: absolute; inset: 10px; border-radius: 50%; background: var(--surface); }
+  .ring > div { position: relative; text-align: center; }
+  .ring strong { display: block; font-size: 24px; font-weight: 800; }
+  .ring small { font-size: 11px; color: var(--muted); }
+  .ring-copy strong { font: 700 15px var(--font-display); }
+  .ring-copy p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .mini-subjects { display: grid; gap: 10px; }
+  .mini-subject { --t: var(--emerald); display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  .mini-subject span:first-child { flex: 1; }
+  .mini-subject b { width: 38px; text-align: right; color: var(--t); }
+  .footnote { margin: 16px 2px; font-size: 12px; color: var(--muted); }
+
+  /* weekly chart */
+  .week-total { padding: 5px 12px; border-radius: 99px; font-size: 12px; font-weight: 600; color: var(--emerald); background: rgba(52, 211, 153, .14); }
+  .week-chart { display: grid; grid-template-columns: repeat(7, 1fr); gap: clamp(6px, 2vw, 18px); align-items: end; height: 180px; }
+  .week-day { display: grid; justify-items: center; gap: 4px; height: 100%; grid-template-rows: 1fr auto auto; }
+  .bar-wrap { display: flex; align-items: flex-end; width: min(44px, 100%); height: 100%; }
+  .bar-wrap i { width: 100%; border-radius: 10px 10px 4px 4px; background: linear-gradient(180deg, var(--cyan), var(--violet)); transform-origin: bottom; }
+  .week-day strong { font-size: 14px; } .week-day small { font-size: 12px; color: var(--muted); }
+
+  /* focus room: the immersive moment */
+  .timer-panel { position: relative; overflow: hidden; padding: 30px 22px; text-align: center; color: #eef0ff; border-color: rgba(139, 92, 246, .35);
+    background: radial-gradient(520px 340px at 50% 38%, rgba(139, 92, 246, .38), transparent 70%), linear-gradient(180deg, #120c35, #070b1a); }
+  .timer-mode { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+  .timer-panel .mode-btn { color: #a9b2dd; }
+  .timer-ring { position: relative; width: min(300px, 78vw); aspect-ratio: 1; margin: 26px auto; }
+  .timer-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .timer-track, .timer-progress { fill: none; stroke-width: 9; }
+  .timer-track { stroke: rgba(255, 255, 255, .09); }
+  .timer-progress { stroke: url(#tg); stroke-linecap: round; stroke-dasharray: 729; stroke-dashoffset: 0; transition: stroke-dashoffset .5s linear; filter: drop-shadow(0 0 10px rgba(34, 211, 238, .65)); }
+  .timer-readout { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .timer-readout strong { font-size: clamp(46px, 11vw, 64px); font-weight: 800; font-variant-numeric: tabular-nums; }
+  .timer-readout span { margin-top: 4px; font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--cyan); }
+  .timer-controls { display: flex; justify-content: center; gap: 10px; }
+  .timer-controls .primary-btn { min-width: 150px; padding: 13px 22px; font-size: 15px; }
+  .timer-controls .secondary-btn { color: #eef0ff; background: rgba(255, 255, 255, .08); }
+  .timer-hint { margin: 18px 0 0; font-size: 13px; color: #9ca6d6; }
+  .focus-side { padding: 26px; }
+  .focus-side h2 { margin-bottom: 20px; font-size: 22px; }
+  .focus-stat { display: flex; align-items: center; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid var(--line); color: var(--muted); }
+  .focus-stat strong { font: 800 24px var(--font-display); color: var(--cyan); }
+  .focus-note { display: flex; gap: 12px; margin-top: 22px; padding: 14px; border-radius: var(--r-md); background: var(--accent-soft); }
+  .focus-note > span { color: var(--amber); font-size: 20px; }
+  .focus-note p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+
+  /* notes: amber identity, each card gets one of four accent colours */
+  .note-editor { padding: 20px; }
+  .note-editor textarea { min-height: 110px; margin-top: 8px; resize: vertical; line-height: 1.6; }
+  .note-editor-bottom { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+  .note-card { --n: var(--amber); display: flex; flex-direction: column; min-height: 140px; padding: 18px; border-radius: var(--r-md); border-top: 3px solid var(--n); transition: transform .25s var(--ease); }
+  .note-card.c1 { --n: var(--cyan); } .note-card.c2 { --n: var(--violet); } .note-card.c3 { --n: var(--emerald); }
+  .note-card:hover { transform: translateY(-3px) rotate(-.4deg); }
+  .note-card p { flex: 1; margin: 0 0 14px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .note-card-bottom { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--n); }
+
+  /* toast + dialog */
+  .toast { position: fixed; z-index: 60; left: 50%; bottom: 24px; padding: 12px 20px; border-radius: var(--r-md); border: 1px solid rgba(34, 211, 238, .4); background: #101736; color: #fff; font-size: 14px; box-shadow: 0 12px 34px rgba(0, 0, 0, .4); opacity: 0; pointer-events: none; transform: translate(-50%, 20px); transition: opacity .25s, transform .25s var(--ease); }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .dialog { width: min(420px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); color: var(--text); box-shadow: 0 30px 80px rgba(0, 0, 0, .55); }
+  .dialog::backdrop { background: rgba(4, 6, 20, .7); backdrop-filter: blur(4px); }
+  .dialog[open] { animation: pop .22s var(--ease); }
+  .dialog h3 { margin-bottom: 6px; font-size: 19px; }
+  .dialog p { margin-bottom: 14px; font-size: 14px; color: var(--muted); }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+}
+
+@layer views {
+  .view.enter { animation: fade .3s var(--ease); }
+  .view.enter .bar-wrap i { animation: rise .8s var(--ease) both; }
+  .view.enter .progress-track i, .view.enter .mini-track i { animation: grow .9s var(--ease) both; }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } }
+  @keyframes rise { from { transform: scaleY(0); } }
+  @keyframes grow { from { transform: scaleX(0); } }
+  @keyframes pop { from { opacity: 0; transform: scale(.94); } }
+
+  @media (max-width: 1100px) {
+    .stat-grid { grid-template-columns: repeat(2, 1fr); }
+    .task-form { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 860px) {
+    .content-grid, .focus-layout { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 760px) {
+    .sidebar { transform: translateX(-100%); transition: transform .25s var(--ease); }
+    .sidebar.open { transform: none; box-shadow: 20px 0 60px rgba(0, 0, 0, .5); }
+    .main-content { margin-left: 0; }
+    .mobile-menu { display: block; }
+    .topbar { height: 62px; margin-bottom: 20px; }
+    .breadcrumb { margin: 0 auto 0 12px; }
+    .saved-label, .command-hint, .command-bar kbd, .live-dot { display: none; }
+    .welcome-row { flex-direction: column; }
+    .task-form, .attendance-form { grid-template-columns: 1fr 1fr; }
+    .form-submit, .attendance-form > .primary-btn { grid-column: 1 / -1; }
+    .lower-panel .panel-heading { flex-direction: column; align-items: flex-start; }
+    .footer { flex-direction: column; }
+    .task-row { flex-wrap: wrap; }
+  }
+  @media (max-width: 430px) {
+    .stat-grid { gap: 10px; } .stat-card { padding: 14px; } .stat-card > strong { font-size: 26px; }
+    .task-form, .attendance-form { grid-template-columns: 1fr; }
+    .backup-btn, .import-label { padding: 6px 8px; font-size: 11px; }
+    .top-avatar { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+}
