@@ -1,6 +1,6 @@
 /* CampusOS — client-side student productivity dashboard */
 const STORAGE_KEY = "campusos-data-v1";
-const defaults = { tasks: [], subjects: [], notes: [], sessions: 0, focusedMinutes: 0, theme: "light" };
+const defaults = { tasks: [], subjects: [], notes: [], sessions: 0, focusedMinutes: 0, theme: "dark" };
 let state = loadState();
 let activeFilter = "all";
 let timer = { duration: 25 * 60, remaining: 25 * 60, interval: null, running: false, mode: 25 };
@@ -19,6 +19,14 @@ function showToast(message) {
   const toast = $("#toast"); toast.textContent = message; toast.classList.add("show");
   clearTimeout(showToast.timeout); showToast.timeout = setTimeout(() => toast.classList.remove("show"), 2300);
 }
+function ask({ title, message = "", confirmLabel = "Confirm", value = null, danger = false }) {
+  const dlg = $("#dialog"), input = $("#dialogInput");
+  $("#dialogTitle").textContent = title; $("#dialogMsg").textContent = message;
+  input.hidden = value === null; input.value = value ?? ""; input.required = value !== null;
+  $("#dialogOk").textContent = confirmLabel; $("#dialogOk").classList.toggle("danger", danger);
+  dlg.showModal(); if (value !== null) input.select();
+  return new Promise(resolve => dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok" ? (value === null ? true : input.value.trim()) : null), { once: true }));
+}
 function dateLabel(date) {
   if (!date) return "No due date";
   const d = new Date(`${date}T00:00:00`);
@@ -30,6 +38,7 @@ function getAttendance() {
   const attended = state.subjects.reduce((sum, subject) => sum + subject.attended, 0);
   return total ? Math.round(attended / total * 100) : 0;
 }
+const tone = pct => pct >= 75 ? "hi" : pct >= 60 ? "mid" : "lo";
 function renderStats() {
   const open = state.tasks.filter(t => !t.done).length;
   $("#statOpen").textContent = open; $("#statDone").textContent = state.tasks.filter(t => t.done).length;
@@ -39,10 +48,11 @@ function renderStats() {
   $("#focusSessions").textContent = state.sessions; $("#focusMinutes").textContent = state.focusedMinutes;
   const avg = getAttendance();
   $("#ringValue").textContent = avg === null ? "—" : `${avg}%`;
-  $("#attendanceRing").style.background = `conic-gradient(var(--accent) ${avg === null ? 0 : avg * 3.6}deg, var(--line) 0deg)`;
+  $("#attendanceRing").style.background = `conic-gradient(var(--cyan) ${avg === null ? 0 : avg * 3.6}deg, var(--line) 0deg)`;
   $("#attendanceMessage").textContent = avg === null ? "Add your subjects" : avg >= 75 ? "You're building consistency" : "There's room to improve";
   $("#attendanceSubtext").textContent = avg === null ? "Track classes attended to see your progress here." : `${state.subjects.length} subject${state.subjects.length === 1 ? "" : "s"} tracked so far.`;
-  $("#todayLabel").textContent = new Date().toLocaleDateString(undefined, { weekday:"long", month:"long", day:"numeric" }).toUpperCase();
+  $("#todayLabel").textContent = new Date().toLocaleDateString(undefined, { weekday:"long", month:"long", day:"numeric" })
+  ;const hr = new Date().getHours(); $("#greeting").textContent = hr < 12 ? "Good morning." : hr < 18 ? "Good afternoon." : "Good evening.";
 }
 function taskMarkup(task) {
   return `<div class="task-row ${task.done ? "done" : ""}">
@@ -67,17 +77,17 @@ function renderAttendance() {
   const avg = getAttendance();
   $("#overviewSubjects").innerHTML = state.subjects.slice(0,3).map(s => {
     const pct = s.total ? Math.round(s.attended / s.total * 100) : 0;
-    return `<div class="mini-subject"><span>${escapeHTML(s.name)}</span><div class="mini-track"><i style="width:${pct}%"></i></div><b>${pct}%</b></div>`;
+    return `<div class="mini-subject ${tone(pct)}"><span>${escapeHTML(s.name)}</span><div class="mini-track"><i style="width:${pct}%"></i></div><b>${pct}%</b></div>`;
   }).join("");
   $("#subjectGrid").innerHTML = state.subjects.map(s => {
     const pct = s.total ? Math.round(s.attended / s.total * 100) : 0;
-    return `<article class="subject-card"><div class="subject-card-head"><h3>${escapeHTML(s.name)}</h3><span class="subject-percent">${pct}%</span></div><div class="subject-meta"><span>${s.attended} attended</span><span>${s.total} total classes</span></div><div class="attendance-actions"><button class="tiny-action" data-attendance-change="${s.id}" data-change="-1" ${s.attended===0?"disabled":""}>− Attended</button><button class="tiny-action" data-attendance-change="${s.id}" data-change="1">＋ Attended</button></div><div class="progress-track"><i style="width:${pct}%"></i></div><button class="delete-btn" data-subject-delete="${s.id}">Remove subject ×</button></article>`;
+    return `<article class="subject-card ${tone(pct)}"><div class="subject-card-head"><h3>${escapeHTML(s.name)}</h3><span class="subject-percent">${pct}%</span></div><div class="subject-meta"><span>${s.attended} attended</span><span>${s.total} total classes</span></div><div class="attendance-actions"><button class="tiny-action" data-attendance-change="${s.id}" data-change="-1" ${s.attended===0?"disabled":""}>− Attended</button><button class="tiny-action" data-attendance-change="${s.id}" data-change="1">＋ Attended</button></div><div class="progress-track"><i style="width:${pct}%"></i></div><button class="delete-btn" data-subject-delete="${s.id}">Remove subject ×</button></article>`;
   }).join("");
   $("#subjectCount").textContent = `${state.subjects.length} subject${state.subjects.length === 1 ? "" : "s"}`;
   $("#attendanceEmpty").hidden = state.subjects.length > 0;
 }
 function renderNotes() {
-  $("#notesGrid").innerHTML = state.notes.map(note => `<article class="note-card"><p>${escapeHTML(note.text)}</p><div class="note-card-bottom"><span>${escapeHTML(note.date)}</span><button class="delete-btn" data-note-delete="${note.id}" aria-label="Delete note">×</button></div></article>`).join("");
+  $("#notesGrid").innerHTML = state.notes.map(note => `<article class="note-card c${(note.id.charCodeAt(0) + note.id.length) % 4}"><p>${escapeHTML(note.text)}</p><div class="note-card-bottom"><span>${escapeHTML(note.date)}</span><button class="delete-btn" data-note-delete="${note.id}" aria-label="Delete note">×</button></div></article>`).join("");
   $("#notesEmpty").hidden = state.notes.length > 0;
   $("#noteCount").textContent = `${state.notes.length} note${state.notes.length === 1 ? "" : "s"}`;
 }
@@ -98,14 +108,17 @@ function navigate(view) {
   $$(".nav-link[data-view]").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
   $("#breadcrumbTitle").textContent = ({overview:"Overview",tasks:"My tasks",attendance:"Attendance",focus:"Focus room",notes:"Quick notes"})[view] || "Overview";
   $("#sidebar").classList.remove("open"); window.scrollTo({top:0, behavior:"smooth"});
+  const v = $(`#view-${view}`); v.classList.remove("enter"); void v.offsetWidth; v.classList.add("enter");
 }
 $$("[data-view]").forEach(btn => btn.addEventListener("click", () => navigate(btn.dataset.view)));
-$$("[data-go]").forEach(btn => btn.addEventListener("click", () => navigate(btn.dataset.go)));
-$("#mobileMenu").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
+$$("[data-go]").forEach(btn => btn.addEventListener("click", () => { navigate(btn.dataset.go); if (btn.dataset.focus) setTimeout(() => $(btn.dataset.focus)?.focus({ preventScroll: true }), 60); }));
+$("#mobileMenu").addEventListener("click", e => { e.stopPropagation(); $("#sidebar").classList.toggle("open"); });
+document.addEventListener("click", e => { if (!e.target.closest("#sidebar")) $("#sidebar").classList.remove("open"); });
 $("#themeToggle").addEventListener("click", () => {
   state.theme = state.theme === "dark" ? "light" : "dark";
   document.body.classList.toggle("dark", state.theme === "dark"); saveState();
   $("#themeIcon").textContent = state.theme === "dark" ? "☾" : "☼";
+  document.querySelector('meta[name="theme-color"]').content = state.theme === "dark" ? "#0a0f24" : "#eef0fb";
 });
 
 $("#taskForm").addEventListener("submit", event => {
@@ -123,7 +136,7 @@ document.addEventListener("change", event => {
     if (task) { task.done = check.checked; task.completedAt = task.done ? new Date().toISOString() : null; saveState(); renderAll(); showToast(task.done ? "Nice work — task completed!" : "Task moved back to to-do."); }
   }
 });
-document.addEventListener("click", event => {
+document.addEventListener("click", async event => {
   const taskDelete = event.target.closest("[data-task-delete]");
   const subjectDelete = event.target.closest("[data-subject-delete]");
   const noteDelete = event.target.closest("[data-note-delete]");
@@ -131,13 +144,13 @@ document.addEventListener("click", event => {
   if (taskEdit) {
     const task = state.tasks.find(t => t.id === taskEdit.dataset.taskEdit);
     if (task) {
-      const title = prompt("Edit task title:", task.title);
-      if (title !== null && title.trim()) { task.title = title.trim().slice(0,90); saveState(); renderAll(); showToast("Task updated."); }
+      const title = await ask({ title: "Edit task", message: "Update the task title.", value: task.title, confirmLabel: "Save changes" });
+      if (title) { task.title = title.trim().slice(0,90); saveState(); renderAll(); showToast("Task updated."); }
     }
   }
-  if (taskDelete && confirm("Delete this task?")) { state.tasks = state.tasks.filter(t => t.id !== taskDelete.dataset.taskDelete); saveState(); renderAll(); showToast("Task deleted."); }
-  if (subjectDelete && confirm("Remove this subject and its attendance data?")) { state.subjects = state.subjects.filter(s => s.id !== subjectDelete.dataset.subjectDelete); saveState(); renderAll(); showToast("Subject removed."); }
-  if (noteDelete && confirm("Delete this note?")) { state.notes = state.notes.filter(n => n.id !== noteDelete.dataset.noteDelete); saveState(); renderAll(); showToast("Note deleted."); }
+  if (taskDelete && await ask({ title: "Delete this task?", message: "This can't be undone.", confirmLabel: "Delete task", danger: true })) { state.tasks = state.tasks.filter(t => t.id !== taskDelete.dataset.taskDelete); saveState(); renderAll(); showToast("Task deleted."); }
+  if (subjectDelete && await ask({ title: "Remove this subject?", message: "Its attendance data will be deleted.", confirmLabel: "Remove subject", danger: true })) { state.subjects = state.subjects.filter(s => s.id !== subjectDelete.dataset.subjectDelete); saveState(); renderAll(); showToast("Subject removed."); }
+  if (noteDelete && await ask({ title: "Delete this note?", message: "This can't be undone.", confirmLabel: "Delete note", danger: true })) { state.notes = state.notes.filter(n => n.id !== noteDelete.dataset.noteDelete); saveState(); renderAll(); showToast("Note deleted."); }
   const attendanceChange = event.target.closest("[data-attendance-change]");
   if (attendanceChange) {
     const subject = state.subjects.find(s => s.id === attendanceChange.dataset.attendanceChange);
@@ -225,7 +238,7 @@ $("#importData")?.addEventListener("change", async event => {
     const parsed = JSON.parse(await file.text());
     const incoming = parsed.data || parsed;
     if (!incoming || !Array.isArray(incoming.tasks) || !Array.isArray(incoming.subjects) || !Array.isArray(incoming.notes)) throw new Error("Invalid backup");
-    if (!confirm("Restore this backup? It will replace the data currently saved in this browser.")) return;
+    if (!await ask({ title: "Restore this backup?", message: "It will replace the data currently saved in this browser.", confirmLabel: "Restore" })) return;
     state = {...defaults,...incoming}; saveState(); renderAll(); showToast("Backup restored successfully.");
   } catch { showToast("That backup file is not valid CampusOS data."); }
   finally { event.target.value = ""; }
